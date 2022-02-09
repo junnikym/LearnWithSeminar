@@ -173,6 +173,9 @@ GETEX <Key> PX 1000        -> 조회 & 1초 후 삭제
 ``` redis
 SETEX <Key> 5 <VALUE>      -> 설정 & 5초 후 삭제
 PSETEX <Key> 1000 <VALUE>  -> 설정 & 1초 후 삭제
+
+// SET 또한 EX, PX 같은 키워드를 사용할 수 있음.
+SET <Key> <VALUE> EX <ExpireTime>
 ```
 
 <b>추가 및 저장 그리고 Subquery</b>
@@ -209,6 +212,185 @@ ref : <http://redisgate.kr/redis/command/stralgo.php> <br/>
 ref : <https://redis.io/commands/lcs>
 
 <br/>
+
+### Lists
+Key-Value 가 <code>1 대 N</code> 관계 / Value는 입력된 순서대로 저장 / 주로 <code>Queue</code>, <code>Stack</code> 으로 활용. <br/>
+<code>Blocking</code> 기능을 활용한 <code>Event Queue</code>
+
+<b>생성 / 삭제</b>
+Value가 존재 시 Key는 생성; 반면, Value가 없을 시 Key는 삭제. <br/>
+
+생성 : <code>LPUSH</code>, <code>RPUSH</code>, <code>LPUSHX</code>, <code>RPUSHX</code>, <code>LINSERT</code> <br/>
+조회 : <code>LRANGE</code> (<code>RRANGE</code>는 존재하지 않음), <code>LINDEX</code>, <code>LPOS</code> <br/>
+수정 : <code>LSET</code>, <code>RPOPLPUSH</code> <br/>
+삭제 : <code>LPOP</code>, <code>RPOP</code>, <code>LREM</code>, <code>LTRIM</code> <br/>
+
+<code>L</code>, <code>R</code> 은 각각 <code>Left</code>, <code>Right</code> 를 의미한다.
+따라서 다음과 같이 생성/삭제 가 가능하다.
+``` redis
+LPUSH <Key> <V1>        -> V1
+LPUSH <Key> <V2>        -> V2, V1
+RPUSH <Key> <V3>        -> V2, V1, V3
+RPUSH <Key> <V4> <V5>   -> V2, V1, V3, V4, V5
+LPUSH <Key> <V6> <V7>   -> V7, V6, V2, V1, V3, V4, V5
+// LPUSH 시 가장 앞에 있는 Value 가 가장 Right 방향에 위치하게된다.  
+
+LPOP <Key>              -> POP V7 // V6, V2, V1, V3, V4, V5
+RPOP <Key>              -> POP V5 // V6, V2, V1, V3, V4
+
+LRANGE <Key> <StartIndex> <EndIndex>
+LRANGE <Key> 0 -1       -> 모두 출력 // 0 ~ 끝(-1)까지
+
+LINSERT <Key> <BEFORE | AFTER> <Pivot> <Value>
+LINSERT <Key> AFTER V6 Test     -> V6, Test, V2, V1, V3, V4
+LINSERT <Key> BEFORE V6 Test    -> Test, V6, Test, V2, V1, V3, V4
+
+LINSERT <Key> <BEFORE | AFTER> <Index> <Value> BY INDEX
+// 해당 기능은 Enterprise에서 사용 가능
+```
+<code>RPOPLPUSH</code> 키워드를 통해 Key1의 가장 Right에 있는 요소를 Key2의 Left에 추가 할 수 있다.
+``` redis
+RPOPLPUSH <Key1> <key2>
+
+LSET <Key> <Index> <Value>
+LSET <KEY> 0 "Hello"        -> 0번째 리스트를 Hello로 변경
+```
+
+> <code>~PUSHX</code>의 경우 Key를 생성하지 않는다 따라서 List가 존재하지 않을 시 동작하지 않는다.
+> 이는 새로운 Key를 생성하지 않기 때문에 불필요한 데이터 흐름을 막을 수 있다.
+
+<code>~REM</code>를 사용할 시 지정한 Value 와 동일한 값을 찾아 삭제한다.
+``` redis
+LREM <Key> <Count> <Value>
+
+RPUSH <Key> v1 v2 v1 v2 v1 v2 v1 v2 v1 v2
+LREM <Key> 2 v2
+     
+(결과) v1 v1 v1 v2 v1 v2 v1 v2
+```
+```<Count>```가 음수 일 경우 반대로 스캔 후 삭제 (<code>LREM</code> 일 경우 Right 방향부터 N개 삭제)
+
+** ```LPOS <Key> <Value>```를 통해 Index를 얻을 수 도 있음. 뒤에 붙일 수 있는 옵션이 존재하는데 이는 [여기](http://redisgate.kr/redis/command/lpos.php) 를 참조
+
+<b>Blocking</b>
+
+<code>B~POP</code> 키워드는 누가 데이터를 Push하기 전까지 대기하여 값을 가지고온다. 이 기능을 <code>Event Queue</code>로 사용하여 불필요한 Polling 프로세스를 막을 수 있다.
+
+``` redis
+BRPOP <Key> <Time>      -> <Time> 이 0일 시 계속 대기
+ 
+* <Time> 이 지정시 <Time> 만큼 대기 후 응답 없을 시 종료
+
+   ┏━[ Client A ]━━━━━┓   ┏━[ Client B ]━━━━━┓
+ 1 ┃ BRPOP queue 0    ┃   ┃                  ┃
+   ┃                  ┃ 2 ┃ LPUSH queue "hi" ┃ 
+ 3 ┃ 0) queue         ┃   ┃                  ┃
+ | ┃ 1) "hi"          ┃   ┃                  ┃
+   ┗━━━━━━━━━━━━━━━━━━┛   ┗━━━━━━━━━━━━━━━━━━┛
+* 만약 List에 이미 값이 존재 시 바로 출력이 된다.
+* <Key> 는 여러개 지정이 가능하다.
+```
+
+<br/>
+
+### Sets
+Key-Value 가 <code>1 대 N</code> 관계 / 데이터가 있는지 없는지 확인하는 용도로 많이 사용 / Java의 Set과 같은 특징 <br/>
+예를 들어 특정 유저를 Follow 하는 목록을 저장하는 등.. 에 사용 할 수 있다.
+
+생성 : <code>SADD</code>, <code>SMOVE</code> <br/>
+조회 : <code>SMEMBERS</code>, <code>SCARD</code>, <code>SRANDMEMBER</code>, <code>SISMEMBER</code>, <code>SSCAN</code> <br/>
+삭제 : <code>SREM</code> <br/>
+
+<code>SADD</code> 키워드는 여러개의 Value를 한번에 추가 가능하며 추가 시 <code>EX</code>, <code>PX</code> 등.. 의 키워드를 활용하여 만료시간을 지정할 수 있다. <br/>
+``` redis
+SADD <Key> <Value>
+SADD <Key> <V1> <V2> ..
+SADD <Key> <Value> EX 1000
+
+SMOVE <KeyLhs> <KeyRhs> <TargetValue>
+-> <KeyLhs>의 <TargetValue>를 제거 후 <KeyRhs>에 추가.
+```
+
+<code>SREM</code> 키워드를 통해 요소를 삭제 할 수 있다.
+``` redis
+SREM <Key> <TargetValue>
+
+SPOP <Key>      -> <Key> 중 무작위로 하나를 조회 후 삭제
+```
+
+<code>SMEMBERS</code> 키워드를 통해서 모든 데이터를 조회 할 수 있으며 <code>SISMEMBER</code> 키워드를 통해 하나의 데이터가 Key에 존재하는지 알 수 있다.
+``` redis
+SMEMBERS <Key>
+SMEMBERS <Key> <SORT|DESC>
+-> SORT 또는 DESC 키워드를 뒤에 추가하면 오름차순 또는 내림차순으로 정렬하여 조회 가능 
+
+SISMEMBER <Key> <Value>
+-> <Key>에 <Value>가 존재 시 1 반환, 아닐 시 0 반환
+
+SCARD <Key>
+SLEN <Key>
+-> <Key>의 요소 갯수를 반환
+
+SUNION <Key1> <Key2> 
+SINTER <Key1> <Key2> 
+SIDIFF <Key1> <Key2> 
+-> 각각 두 Key에 관한 합집합과 교집합, 차집합을 얻을 수 있으며 Sort 기능 사용가능.
+
+S~STORE <NewKey> <Key1> <Key2>
+-> 위 합집합, 교집합, 차집합 연산을 통해 나온 결과를 새로운 Set으로 저장.
+* 만약 <NewKey> 에 이미 값이 들어가 있다면 지워지고 다시 저장됨. 
+
+```
+<code>SRANDMEMBER</code> 키워드를 통해 Key에 존재하는 값 중 랜덤으로 하나를 반환받을 수 있다.
+``` redis
+SRANDMEMBER <Key>
+```
+Key를 조회 시 Value가 많으면 Redis가 이를 처리하기위해 멈출 수 가 있다. 이를 방지하기위해 <code>SCAN</code> 이라는 키워드를 사용한다.
+``` redis
+KEYS           -> 모든 Key를 조회
+SCAN <Cursor>  -> 몇개의 Key만 조회 후 다름 순서부터 조회 할 수 있는 Cursor 반환
+
+SSCAN <Key> <Cursor> -> 몇개의 Value / 다음 Cursor
+
+SSCAN <Key> <Cursor> MATCH <Pattern>
+-> 다음과 같이 패턴과 Match 되는 <Value>를 얻을 수 도 있다.
+에시)
+SSCAN <Key> <Cursor> MATCH Hello*
+-> 1) HelloMySQL
+   2) HelloRedis
+   
+SSCAN <Key> <Cursor> MATCH <Pattern> Count <N>
+-> Count 키워드를 통해 갯수를 지정 가능, 하지만 정확한 갯수를 보장하지 않음.
+```
+
+<br/>
+
+### Sorted Sets (ZSets)
+Key-(Value, Score)로 구성 / Score로 Sort / 집합이라는 의미에서 Value를 Member라 부름. <br/>
+예를 들어 ScoreBoard를 구현 하는 등.. 에 사용할 수 있다. <br/>
+
+* ZSets를 사용할 때 주의해야할 점은 Score가 <code>Double</code> 타입이기 때문에 실수가 표현 못하는 정수가 존재한다.
+
+<code>Sets</code>에서 <code>SADD</code>로 추가한다면 <code>ZADD</code>를 사용하여 <code>ZSets</code>에 값을 추가할 수 있다.
+``` redis
+ZADD <Key> <Score> <Value>
+ZADD <Key> <Score> <Value> EX 5
+ZADD <Key> <S1> <V1> <S2> <V2> ..
+
+// 조회
+ZRANGE <Key> <StartIndex> <EndIndex
+ZREVRANGE <Key> <StartIndex> <EndIndex>
+```
+다른 자세한 키워드는 [여기](http://redisgate.kr/redis/command/zsets.php) 를 참고.
+
+<br/>
+
+### Hash
+
+...
+
+<br/>
+
 
 ref : <https://www.youtube.com/watch?v=92NizoBL4uA> <br/>
 ref : <https://www.youtube.com/watch?v=mPB2CZiAkKM> <br/>
