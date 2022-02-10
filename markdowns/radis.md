@@ -82,6 +82,8 @@ Distributed Memory Caching System 에는 대표적으로 <code>Memcached</code>�
  - 유저 API Limit
  - Job Queue
 
+---
+
 ## Redis Collections 
 Redis에서 지원하는 콜랙션은 다음과 같다.
 
@@ -388,6 +390,79 @@ ZREVRANGE <Key> <StartIndex> <EndIndex>
 ### Hash
 
 ...
+
+<br/>
+
+---
+
+## Collection 사용시 주의!
+ - 하나의 컬랙션에 너무 많은 요소를 삽입하지 말것. <br/>
+    -> 10,000 개 이하의 Item을 유지하는 것이 좋다고 한다.
+ - Expire Time은 개별이 아닌 Collection 전체에 걸린다. <br/>
+    -> 10,000 개의 Item을 가진 Collection이 Expire가 걸릴 경우 10,000 개가 다 지워
+
+---
+
+## Redis 운영 관련 주의
+
+1. 메모리 관리 철저!
+2. O(n) 관련 명령은 주의할 것. 
+3. Replication
+
+---
+
+### 1. 메모리 관리 철저 
+
+- Physical Memory 이상 사용할 경우 문제 발생
+  - Swap 존재 시 메모리 Page 접근마다 속도 저하 (Swap이 이루어진 Memory Page는 계속 Swap이 발생)
+  - Swap이 없으면 OOM(Out Of Memory)에 의해 죽게됨.
+  - 많은 업체가 메모리가 Swap을 쓰고 있다는 것을 잘 모른다고한다. -> 모니터링을 계속해야함. 
+  
+- RSS 값을 모니터링하자!
+
+
+- <code>MaxMemory</code>를 설정하더라도 이보다 더 사용할 수 있음. 
+  - <code>메모리 파편화</code> 때문에 <code>MaxMemory</code>를 설정하더라도 이보다 더 사용할 수 있음. <br/>
+     | 예를 들어 Memory Page Size가 4096 일 때, 메모리를 1 만큼 할당 요청하더라도 실제로 4096 만큼 할당한다. <br/>
+     | 만약 여기서 4096 만큼 또 할당 받았을 때 실제로 4097 만큼 사용하고 있지만 8192 만큼 메모리를 할당받아 사용하는 것. <br/>
+     | ** 자세한 내용은 [여기](https://jeong-pro.tistory.com/91) 를 참고 
+  - Redis는 메모리 할당/해제 관리에 MemoryPool을 사용하지 않음 -> <code>Memory Allocate</code>에 따라 성능이 좌지우지
+  - Redis는 <code>JEMalloc</code>을 사용한다. Redis 4.x 버전부터 JEMalloc에 힌트를 주는 기능 추가 <br/> But, JEMelloc 버전에 따라 다르게 동작 할 수 있다. <br/>
+     | 3.x 버전은 실제 Used Memory가 2GB로 보고되지만 실제 11GB의 RSS를 사용하는 경우가 자주 발생.
+  - 다양한 사이즈를 가지는 데이터보다 유사한 크기의 데이터를 사용하는 것이 파편화를 막기 좋다.
+  
+<sub>
+** MaxMemory : MaxMemory 이상 메모리 사용 시 랜덤한 Key 또는 Expire가 지정된 것을 Redis가 자동으로 지워 메모리를 확보 후 메모리를 사용 <br/>
+** <code>MemoryPool</code>에 대해서는 [여기](https://www.ikpil.com/1151) 와 [여기](https://m.blog.naver.com/kbm0996/221062731470) 를 참고 <br/>
+** <code>JEMalloc</code>에 대해서는 [여기](http://channy.creation.net/project/dev.kthcorp.com/2011/05/12/last-free-lunch-facebooks-memory-allocator-jemalloc/index.html) 를 참고 <br/>
+</sub>
+
+
+- 큰 메모리를 사용하는 Instance 보다 작은 메모리를 사용하는 Instance 여러개가 더 안전함
+  - Redis는 쓰기 시 <code>Copy on Write</code> 방식으로 작동.
+  - 쓰기 시 <code>fork()</code>를 수행하여 갱신할 메모리 페이지를 복사한 후 쓰기 연산
+  - 이는 최대 메모리를 2배까지 사용할 수 있다. <br/><br/>
+  - 예시 1 ) 24GB Instance 사용 시, fork() -> 24GB (+24GB) 사용
+  - 예시 2 ) 8GB Instance 3개 사용 시, fork() -> 8GB*3 (+8GB) 사용 
+
+<b>메모리가 부족할 때는?</b>
+1. Migration (메모리를 60% ~ 70% 사용할 경우 이전에 대해 생각) <br/> 
+   -> 메모리가 빡빡하면 Migration 중 문제가 발생할 수 있다.
+2. 존재하는 데이터를 줄이기 (데이터를 일정 수준에서만 사용하도록)<br/>
+   -> 다만 Swap을 사용중이면 프로세스를 재시
+
+<b>메모리를 줄이기 위한 설정</b>
+
+다음은 메모리를 많이 사용하는 자료구조이다.
+
+   - Hash ( HashTable을 사용 )
+   - Sorted Set ( Skiplist와 HashTable을 사용 )
+   - Set ( HashTable을 사용 )
+
+In-Memory 이기 때문에 적은 개수라면 선형 탐색을 하더라도 충분히 빠르다. 따라서 속도는 조금 느리더라도 메모리를 적게먹는 <code>Ziplist</code>를 List, Hash, SotedSet 등을 대체해서 처리 ( 아래 설정을 사용 ) 
+- <code>hash-max-ziplist-entries</code>, <code>hash-max-ziplist-value</code>
+- <code>list-max-ziplist-entries</code>, <code>list-max-ziplist-value</code>
+- <code>zset-max-ziplist-entries</code>, <code>zset-max-ziplist-value</code>
 
 <br/>
 
