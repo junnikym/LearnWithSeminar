@@ -406,7 +406,7 @@ ZREVRANGE <Key> <StartIndex> <EndIndex>
 ## Redis 운영 관련 주의
 
 1. 메모리 관리 철저!
-2. O(n) 관련 명령은 주의할 것. 
+2. O(n) 관련 명령은 주의할 것 
 3. Replication
 
 ---
@@ -466,6 +466,80 @@ In-Memory 이기 때문에 적은 개수라면 선형 탐색을 하더라도 충
 
 <br/>
 
+### 2. O(n) 관련 명령은 주의할 것
+Redis 는 <code>SingleThread</code> / 동시에 단 1개의 명령어만 실행가능 <br/>
+단순한 Get/Set 명령어의 경우 초당 <code>100,000 TPS</code> 이상 처리 가능 (단, 성능에 따른 차이는 있다) <br/>
+<sub>** TPS <sub>Transaction Per Second</sub> : 초당 처리할 수 있는 트렌젝션의 갯수.</sub> <br/>
+
+여기서 문제점은 <code>SingleThread</code>이기 때문에 10,000개의 명령이 들어왔을때, 맨 처음 명령어가 1초 걸린다면 나머지 9,999개의 명령어는 1초 동안 대기해야한다. 이는 9,999개의 Timeout을 야기할 수 있다. <br/>
+
+```
+         ┏━[ Process Input Buffer ]━━━━━━┓
+         ┃     ┏━[ Process Command ]━━━┓ ┃
+    ┏━━━━━━━━┓ ┃ ┏━━━━━━━━┓ ┏━━━━━━━━┓ ┃ ┃
+ ▶  ┃ Packet ┃ ▶ ┃ Packet ┃ ┃ Packet ┃ ┃ ┃
+TCP ┗━━━━━━━━┛ ┃ ┗━━━━━━━━┛ ┗━━━━━━━━┛ ┃ ┃
+         ┃     ┗━━━━━━━━━━━━━━━━━━━━━━━┛ ┃
+         ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛         
+```
+1. TCP는 Package이 끊어져서 올 수 있음.
+2. <code>Process Input Buffer</code>에서 끊어진 Command를 연결하여 완성됬는지 확인함.
+3. 이후 <code>Process Command And Reset</code>을 통해 <code>Process Command</code>로 Command를 이동 
+4. <code>Process Command</code>에서 Command를 실행
+
+따라서 Command하나를 처리하는 동안 Packet이 계속 쌓이게 된다. <br/>
+Get / Set은 빠르기 때문에 처리하는데 문제가 없지만 처리속도가 길어질수록 문제가 생기는 것. <br/>
+
+대표적으로 아래와 같은 명령어가 O(n)에 해당된다. <br/>
+<code>KEYS</code>, <code>FLUSHALL</code>, <code>FLUSHDB</code>, <code>DELETE COLLECTIONS</code>, <code>GET ALL COLLECTIONS</code> <br/>
+
+- <code>KEYS</code> 키워드를 사용하여 모니터링 하는 경우.
+- <code>HASH</code>, <code>SET</code>, <code>ZSET</code> 에서 모든 데이터를 가져오는 경우.
+- Spring Security OAuth Redis Token Store -> 단, 최신버전에서는 해결됨.
+
+이 문제점들은 아래와 같이 해결할 수 있다.
+
+- <code>KEYS</code> -> <code>SCAN</code> (하나의 긴 명령을 여러개의 짧은 명령으로 바꿈 -> 중간에 다른 명령 수행)
+- 모든 Item 가져오기 -> 일부만 가져오기 / 큰 하나의 Collection을 작은 여러개의 Collection으로 <br/>
+    -> 하나당 몇천개 이하로 저장을 권장.
+- Spring Security OAuth Redis Token Store 은 원래 Access Token을 List에 저장했었음. <br/>
+    -> 현재는 Set으로 바뀜.
+
+<br/>
+
+### 3. Replication
+
+1. Redis Replication은 <code>Async Replication</code> -> <code>Replication Lag</code>이 발생 할 수 있다.
+> 예시 ) A, B 서버가 존재 시 
+> 1. A에 데이터가 들어옴
+> 2. B에는 데이터가 없음      <- 여기서 문제 
+> 3. (A->B) Replication
+> 이는 서버의 부하에 따라 문제가 더 크개 발생할 수 있다.
+
+2. <code>Primary Node</code>와 <code>Secondary Node</code>사이의 Replica 관계 설정
+> Replicatio 설정 과정
+> 1. Secondary에 replicaof 또는 slaveof 명령을 전달.
+> 2. Secondary -> Primary 에게 Sync 명령 전달
+> 3. Primary는 Fork()를 통해 현재 상태를 저장 후 Disk에 Dump (여기서 문제가 많이 발생)
+> 4. 해당 정보를 Secondary에 전달 후 Fork 이후 데이터를 계속 Secondary에 전달.
+
+3번에서 Fork()를 수행할 때, Disk Dump에서 성능도 많이 잡아먹고 Memory도 많이 쓰기 때문에 문제가 된다. <br/> 
+** Diskless Replication : Disk를 사용하지 않고 Stream으로 Replication -> Disk IO는 많이 줄어 들지만 Memory를 많이 잡아먹는다
+
+3. Redis Replication은 DBMS의 Statement Replication과 유사하다.<br/>
+    따라서 NOW와 같은 <code>Nondeterministic</code>명령을 사용 시 Primary와 Secondary에서 각각 다른 결과를 초래할 수 있다.<br/>
+    ** Nondeterministic : [여기](https://docs.microsoft.com/ko-kr/sql/relational-databases/user-defined-functions/deterministic-and-nondeterministic-functions?view=sql-server-ver15) 를 참고 / NOW 명령을 실행하는 시점에 따라 다른 결과를 가져올 수 있음. <br/>
+    ** Statement Based Replication : [여기](https://nesoy.github.io/articles/2018-02/Database-Replication) 를 참고
+
+<b>Replication 시 주의점!</b>
+1. Fork() 시 메모리 부족 조심.
+2. redis-cli --rdb 명령은 현상태의 메모리 스냅샷을 가져옴 -> 1번 문제와 같은 문제 야기
+3. AWS나 Cloud의 Redis는 좀 다르게 동작, Fork() 없이 Replication 데이터 전달 (대신 느림)
+4. 다수의 Redis 서버가 Replica를 가질 시, Network Bendwidth 보다 많은 양을 전달 해야하는 경우가 발생 <br/>
+    | 이는 네트웍 이슈 때문에 Replication이 재시작되어 이슈가 발생 할 수 있다. <br/>
+    | 그렇기 때문에 한대씩 Replication을 진행한다든지 대책을 새워야함.
+
+<br/>
 
 ref : <https://www.youtube.com/watch?v=92NizoBL4uA> <br/>
 ref : <https://www.youtube.com/watch?v=mPB2CZiAkKM> <br/>
