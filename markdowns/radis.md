@@ -541,5 +541,44 @@ Get / Set은 빠르기 때문에 처리하는데 문제가 없지만 처리속�
 
 <br/>
 
+## Redis 분산
+
+데이터의 특성에 따라 선택할 수 있는 방법이 달라진다. <br/>
+서비스의 특성이나 상황에 따라 <code>Cache</code> 또는 <code>Persistence Data Store</code> 로 사용할 수 도 있다. <br/>
+
+서비스 분산은 <code>Application</code> 에서 나눌 것인가 <code>Redis Cluster</code>에서 나눌 것인지로 나뉘게 된다. 
+- Application
+  - Consistent
+  - Sharding
+- Redis Cluster
+
+### Application - Consistent Hashing
+
+새로운 Redis 서버를 추가 시 많은 양의 데이터가 Rebalancing을 하게된다. 이 과정에서 많은 성능을 사용하게된다. <br/>
+
+<code>Consistent Hashing</code>는 Key의 Hash를 이용하여 데이터를 분배한다. <br/>
+이는 평균적으로 k/n 만큼의 데이터만 Rebalancing이 이루어지게 된다. ( k=키, n=서버 갯수) <br/>
+만약 서버 A, B, C가 있다고 가정할 때, 서버 D를 추가 한다면 서버 C와 A 안의 데이터 일부만 Rebalancing이 이루어지면된다.
+
+** 자세한 내용은 [우아한 레디스 1:00:00](https://youtu.be/mPB2CZiAkKM?t=3600) 또는 [여기](https://cla9.tistory.com/102) 를 참고
+
+### Application - Sharding
+
+하나의 데이터를 모든 서버에서 찾아야한다면 모든 서버에 부하를 주기 때문에 좋지않음. 따라서 데이터를 어떻게 나누는지는 중요한 문제.
+
+<b>Range</b> <br/>
+단순히 특정 범위(Range)를 정한 후, 해당 범위에 속할 경우 거기에 저장. <br/>
+단, 문제는 상황에 따라 특정 서버에만 데이터가 몰리거나 너무 없는 경우가 발생할 수 있다.
+
+<b>Modular</b> <br/>
+n%k 로 서버의 데이터를 결정한다. 위 <code>Range</code>방식의 단점을 보안할 수 있다. <br/>
+단, 서버 한대가 추가 시 재분배 양이 많아진다, 서버가 2배씩 늘어날 경우 균등하게 분배할 수 있지만 서버가 크면 클수록 늘려야하는 서버 양이 많아진다.
+
+<b>Indexed</b> <br/>
+해당 Key가 어디로 가야하는지 알려주는 서버를 따로 만듦. <br/>
+단, Index Server에 장에가 발생할 경우 서비스 자체가 죽을 수 있다.
+
+<br/>
+
 ref : <https://www.youtube.com/watch?v=92NizoBL4uA> <br/>
 ref : <https://www.youtube.com/watch?v=mPB2CZiAkKM> <br/>
