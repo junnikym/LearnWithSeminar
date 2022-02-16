@@ -1,5 +1,10 @@
 # Redis
 
+다음 세미나 내용을 기반으로 정리 <br/>
+
+우아한 레디스 - 강대명 : <https://www.youtube.com/watch?v=mPB2CZiAkKM> <br/>
+NHN FORWARD - Redis 야무지게 사용하기 : <https://www.youtube.com/watch?v=mPB2CZiAkKM> <br/>
+
 ## Redis 란?
 
  - In-Memory Data Structure Store
@@ -578,7 +583,67 @@ n%k 로 서버의 데이터를 결정한다. 위 <code>Range</code>방식의 단
 해당 Key가 어디로 가야하는지 알려주는 서버를 따로 만듦. <br/>
 단, Index Server에 장에가 발생할 경우 서비스 자체가 죽을 수 있다.
 
+### Redis Cluster
+
+- <code>Hash</code> 기반; <code>16384</code>개의 <code>HashSlot</code>으로 구분하며 Hash Algorithm은 <code>CRC16</code>을 사용. <br/>
+** Slot = CRC16(key) % 16384 <br/>
+
+- 만약 Key값이 <code>Key{...}</code>와 같이 괄호안에 <code>HashKey</code> 값을 입력 할 경우 CRC16(Key) 대신 입력된 HashKey 값을 활용한다.
+
+- <code>Slot</code>Range 를 가지고 있음; Migration은 이 Slot 단위의 데이터를 다른서버로 전달.
+
+<b>Redis Cluster의 장단점</b> <br/>
+
+ - 단점 
+   - 메모리 사용량이 많다.
+   - Migration 자체는 관리자가 시점을 결정해야함.
+   - 라이브러리의 구현이 필요함.
+
+> Redis Cluster는 Primary 마다 Slot Range가 할당되는데, 요청 받은 키가 자신의 슬롯과 다를 경우 <code>-MOVED <올바른 슬롯></code>과 같이 알려준다.
+> 이후 클라이언트가 다시 요청을 올바른 슬롯으로 재전송하여 처리해야하는데 이를 깔끔하게 구현하기 위해 라이브러리가 필요하다.
+
+ - 장점
+   - 자체적인 Primary, Secondary의 Failover
+   - slot 단위의 데이터 관리
+
 <br/>
 
-ref : <https://www.youtube.com/watch?v=92NizoBL4uA> <br/>
-ref : <https://www.youtube.com/watch?v=mPB2CZiAkKM> <br/>
+## Redis Failover
+
+ - Coordinator 기반
+ - VIP / DNS 기반
+ - Redis Cluster 기반
+
+### Coordinator 기반
+<code>zookeeper</code>, <code>etcd</code>, <code>consul</code> 와 같은 코디네이터를 사용
+
+<p align="center"><img src="../images/redis/redis_failover_condinator.png" width="100%" alter="race_condition" /></p>
+
+1. <code>Health Checker</code>를 통해 Primary가 정상임을 Check 한다.
+2. <code>Health Checker</code>가 <code>#1</code> 서버가 Down되었는지 확인되면 <code>#2</code>를 Primary로 승격
+3. <code>Coordinator</code> 에는 <code>#2</code>로 바뀌게 되며 <code>Notification</code> 기능을 통해 <code>API Server</code>에 Current Redis가 <code>#2</code>로 바뀜을 알림.
+
+이미 Coordinator를 사용한다면 -> 생각보다 간단 <br/>
+그게 아니라면 -> 해단 기능을 사용하도록 기능구현
+
+### VIP / DNS 기반
+
+** VIP : Virtual IP
+
+1. <code>API Server</code>는 <code>127.0.0.10</code> 으로만 접속
+2. Primary <code>#1</code>은 <code>VIP 127.0.0.10</code> 가 할당 되어있음.
+3. <code>Health Checker</code>가 <code>#1</code>이 Down 되었을 때 <code>VIP 127.0.0.10</code>를 <code>#2</code>에 할당   
+   - 이때 <code>#1</code>에 있던 모든 연결을 끊어주면서 클라이언트의 재접속을 유도
+
+DNS는 VIP와 같은 방식을 사용하지만 도메인을 할당한다는 차이가 있다.
+
+ - 클라이언트에 추가적인 구현이 필요없음
+ - VIP 기반의 방식은 외부로 서비스를 제공한느 업자에게 유리
+ - DNS 기반은 DNS Cache TTL을 관리해야함.
+   - 사용하는 언어별 Cache 정책을 잘 알아야함
+
+솔루션이 DNS를 Caching 할 경우 Health Checker가 무언가를 바꾸어도 요청이 제대로 가지 않을 수 있음. <br/>
+ -> Check 정책을 잘 알아야 함. 경우에 따라 DNS 정보를 다시 호출하지 않는 경우도 발생 
+이는 VIP 기반의 방식을 하면 겪을 일 없음. / 하지만 DNS 기반의 방식은 DNS 설정만 바꾸면 되기에 좀 더 싸다.
+
+<br/>
